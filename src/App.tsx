@@ -4,14 +4,13 @@ const THEME_KEY = 'resume-tailor-theme'
 const DARK_THEME = 'dark'
 const LIGHT_THEME = 'light'
 
-function App() {
-  const [isDarkMode, setIsDarkMode] = useState(true)
+const getInitialDarkMode = () => {
+  const savedTheme = localStorage.getItem(THEME_KEY)
+  return savedTheme ? savedTheme === DARK_THEME : true
+}
 
-  useEffect(() => {
-    const savedTheme = localStorage.getItem(THEME_KEY)
-    const initialDarkMode = savedTheme ? savedTheme === DARK_THEME : true
-    setIsDarkMode(initialDarkMode)
-  }, [])
+function App() {
+  const [isDarkMode, setIsDarkMode] = useState(getInitialDarkMode)
 
   useEffect(() => {
     document.documentElement.classList.toggle(DARK_THEME, isDarkMode)
