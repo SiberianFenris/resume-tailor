@@ -2,6 +2,24 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      ;(function () {
+        try {
+          var key = 'resume-tailor-theme'
+          var saved = localStorage.getItem(key)
+          var isDark = !saved || saved === 'dark'
+          document.documentElement.classList.toggle('dark', isDark)
+        } catch (_) {}
+      })()
+    </script>
+    <style>
+      html {
+        background-color: #f1f5f9;
+      }
+      html.dark {
+        background-color: #020617;
+      }
+    </style>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Resume Tailor</title>
