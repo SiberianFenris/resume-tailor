@@ -82,7 +82,8 @@ function App() {
         <section className="rounded-xl border border-slate-300 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <h2 className="text-xl font-semibold">Tailored Results</h2>
           <p className="mt-3 text-slate-600 dark:text-slate-300">
-            Placeholder: this is where tailored resume output and suggestions will be shown.
+            Placeholder: this is where tailored resume output and suggestions
+            will be shown.
           </p>
         </section>
       </main>
