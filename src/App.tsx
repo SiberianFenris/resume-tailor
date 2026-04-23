@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { type ChangeEvent, useEffect, useRef, useState } from 'react'
+import { isAllowedResumeFile, isPdfFile } from './resumeFileTypes'
 
 const THEME_KEY = 'resume-tailor-theme'
 const DARK_THEME = 'dark'
@@ -13,12 +14,66 @@ function App() {
   const [isDarkMode, setIsDarkMode] = useState(getInitialDarkMode)
   const [resumeText, setResumeText] = useState('')
   const [jobDescriptionText, setJobDescriptionText] = useState('')
+  const [resumeFileError, setResumeFileError] = useState<string | null>(null)
+  const [isResumeExtracting, setIsResumeExtracting] = useState(false)
+  const resumeFileInputRef = useRef<HTMLInputElement>(null)
 
   const canTailor =
     resumeText.trim().length > 0 && jobDescriptionText.trim().length > 0
 
   const handleTailorClick = () => {
     console.log({ resumeText, jobDescriptionText })
+  }
+
+  const handleResumeTextChange = (value: string) => {
+    setResumeText(value)
+    if (resumeFileError) setResumeFileError(null)
+  }
+
+  const handleResumeFileChange = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const input = event.target
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) return
+
+    setResumeFileError(null)
+
+    if (!isAllowedResumeFile(file)) {
+      setResumeText('')
+      setResumeFileError(
+        'That file type is not supported. Please use a .pdf or .docx file, or paste your resume text manually instead.',
+      )
+      return
+    }
+
+    setIsResumeExtracting(true)
+    try {
+      const { extractTextFromDocx, extractTextFromPdf } = await import(
+        './extractResumeText',
+      )
+      const buffer = await file.arrayBuffer()
+      const raw = isPdfFile(file)
+        ? await extractTextFromPdf(buffer)
+        : await extractTextFromDocx(buffer)
+      const trimmed = raw.trim()
+      if (!trimmed) {
+        setResumeText('')
+        setResumeFileError(
+          'We could not read any text from that file. Please paste your resume text manually instead.',
+        )
+        return
+      }
+      setResumeText(raw)
+    } catch {
+      setResumeText('')
+      setResumeFileError(
+        'We could not read that file. Please paste your resume text manually instead.',
+      )
+    } finally {
+      setIsResumeExtracting(false)
+    }
   }
 
   useEffect(() => {
@@ -45,11 +100,39 @@ function App() {
         <section className="rounded-xl border border-slate-300 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <h2 className="text-xl font-semibold">Resume</h2>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            Paste your resume text below.
+            Upload a .pdf or .docx file, or paste your resume text below.
           </p>
+          <input
+            ref={resumeFileInputRef}
+            type="file"
+            accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            className="sr-only"
+            onChange={handleResumeFileChange}
+          />
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              disabled={isResumeExtracting}
+              onClick={() => resumeFileInputRef.current?.click()}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+            >
+              {isResumeExtracting ? 'Reading file…' : 'Upload resume'}
+            </button>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              .pdf and .docx only
+            </span>
+          </div>
+          {resumeFileError ? (
+            <p
+              className="mt-3 text-sm text-red-600 dark:text-red-400"
+              role="alert"
+            >
+              {resumeFileError}
+            </p>
+          ) : null}
           <textarea
             value={resumeText}
-            onChange={(event) => setResumeText(event.target.value)}
+            onChange={(event) => handleResumeTextChange(event.target.value)}
             rows={12}
             placeholder="Paste your resume here…"
             className="mt-4 w-full resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/30 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-slate-500 dark:focus:ring-slate-500/30"
