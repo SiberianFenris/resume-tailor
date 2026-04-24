@@ -36,7 +36,6 @@ function App() {
   const [saveResumeFormError, setSaveResumeFormError] = useState<string | null>(
     null,
   );
-  const [loadSavedResumeSelectKey, setLoadSavedResumeSelectKey] = useState(0);
   const saveResumeLabelInputRef = useRef<HTMLInputElement>(null);
 
   const canTailor =
@@ -74,7 +73,6 @@ function App() {
       id: crypto.randomUUID(),
       label,
       text: resumeText,
-      savedAt: new Date().toISOString(),
     };
     try {
       const next = [entry, ...savedResumes];
@@ -88,17 +86,22 @@ function App() {
     }
   };
 
-  const handleLoadSavedResumeChange = (
-    event: ChangeEvent<HTMLSelectElement>,
-  ) => {
-    const id = event.target.value;
-    if (!id) return;
+  const loadSavedResume = (id: string) => {
     const found = savedResumes.find((r) => r.id === id);
     if (found) {
       setResumeText(found.text);
       setResumeFileError(null);
     }
-    setLoadSavedResumeSelectKey((k) => k + 1);
+  };
+
+  const deleteSavedResume = (id: string) => {
+    try {
+      const next = savedResumes.filter((r) => r.id !== id);
+      writeSavedResumes(next);
+      setSavedResumes(next);
+    } catch {
+      /* ignore storage errors for delete */
+    }
   };
 
   useLayoutEffect(() => {
@@ -170,10 +173,11 @@ function App() {
             className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
           >
             {isDarkMode ? "Switch to Light" : "Switch to Dark"}
+            {/*TODO: Make this button look nicer, maybe icons instead of text.*/}
           </button>
         </div>
       </nav>
-
+      {/*TODO: Look at reworking the layout of this area. Maybe change resume list dropdown or have it show selected resume name. Add in resume overwriting.*/}
       <main className="mx-auto flex w-full max-w-[900px] flex-1 flex-col gap-8 px-6 py-12">
         <section className="rounded-xl border border-slate-300 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <h2 className="text-xl font-semibold">Resume</h2>
@@ -181,6 +185,7 @@ function App() {
             Upload a .pdf or .docx file, or paste your resume text below. Save a
             version as a master resume to load it later when tailoring to
             different roles.
+            {/* TODO: Look at the wording of this paragraph. */}
           </p>
           <input
             ref={resumeFileInputRef}
@@ -210,13 +215,50 @@ function App() {
               .pdf and .docx only
             </span>
           </div>
+          <div className="mt-6">
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+              Saved resumes
+            </h3>
+            {savedResumes.length === 0 ? (
+              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                No saved resumes yet
+              </p>
+            ) : (
+              <ul className="mt-2 divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-700 dark:border-slate-700">
+                {savedResumes.map((r) => (
+                  <li
+                    key={r.id}
+                    className="flex flex-wrap items-center gap-2 px-3 py-2.5 first:rounded-t-lg last:rounded-b-lg dark:bg-slate-900/40"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-sm text-slate-700 dark:text-slate-300">
+                      {r.label}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => loadSavedResume(r.id)}
+                      className="shrink-0 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+                    >
+                      Load
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteSavedResume(r.id)}
+                      className="shrink-0 rounded-md border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 transition hover:bg-red-50 dark:border-red-900/60 dark:bg-slate-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                    >
+                      Delete
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           {saveResumePanelOpen ? (
             <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/80">
               <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
                 Label this saved resume
               </p>
               <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                For example: “Software engineer — full stack” or “Acme master
+                For example: “Software Engineer — Full Stack” or “ACME master
                 resume”.
               </p>
               <input
@@ -258,30 +300,6 @@ function App() {
                   Cancel
                 </button>
               </div>
-            </div>
-          ) : null}
-          {savedResumes.length > 0 ? (
-            <div className="mt-4">
-              <label
-                htmlFor="load-saved-resume"
-                className="text-sm font-medium text-slate-700 dark:text-slate-300"
-              >
-                Load a saved resume
-              </label>
-              <select
-                key={loadSavedResumeSelectKey}
-                id="load-saved-resume"
-                defaultValue=""
-                onChange={handleLoadSavedResumeChange}
-                className="mt-1.5 block w-full max-w-md rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/30 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-slate-500 dark:focus:ring-slate-500/30"
-              >
-                <option value="">Choose a saved resume…</option>
-                {savedResumes.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.label}
-                  </option>
-                ))}
-              </select>
             </div>
           ) : null}
           {resumeFileError ? (
