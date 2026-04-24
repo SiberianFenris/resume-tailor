@@ -10,7 +10,7 @@ import {
   type SavedResume,
   readSavedResumes,
   writeSavedResumes,
-} from "./savedResumesStorage.ts";
+} from "./savedResumesStorage";
 
 const THEME_KEY = "resume-tailor-theme";
 const DARK_THEME = "dark";
@@ -172,7 +172,7 @@ function App() {
             onClick={() => setIsDarkMode((previous) => !previous)}
             className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
           >
-            {isDarkMode ? "Switch to Light" : "Switch to Dark"}{" "}
+            {isDarkMode ? "Switch to Light" : "Switch to Dark"}
             {/*TODO: Make this button look nicer, maybe icons instead of text.*/}
           </button>
         </div>
