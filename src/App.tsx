@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { isAllowedResumeFile, isPdfFile } from "./resumeFileTypes";
 import {
   type SavedResume,
@@ -15,6 +16,79 @@ import {
 const THEME_KEY = "resume-tailor-theme";
 const DARK_THEME = "dark";
 const LIGHT_THEME = "light";
+const REQUEST_COOLDOWN_MS = 15_000;
+const DAILY_REQUEST_LIMIT = 10;
+const RATE_LIMIT_STORAGE_KEY = "resume-tailor-ai-rate-limit";
+
+type TailorSuggestion = {
+  original: string;
+  suggested: string;
+  reason: string;
+};
+
+type TailorResponse = {
+  suggestions: TailorSuggestion[];
+  keywords: string[];
+};
+
+type RateLimitState = {
+  lastRequestAt: number;
+  dayStamp: string;
+  requestsToday: number;
+};
+
+const buildDayStamp = () => new Date().toISOString().slice(0, 10);
+
+const readRateLimitState = (): RateLimitState => {
+  try {
+    const raw = localStorage.getItem(RATE_LIMIT_STORAGE_KEY);
+    if (!raw) {
+      return { lastRequestAt: 0, dayStamp: buildDayStamp(), requestsToday: 0 };
+    }
+    const parsed = JSON.parse(raw) as Partial<RateLimitState>;
+    return {
+      lastRequestAt:
+        typeof parsed.lastRequestAt === "number" ? parsed.lastRequestAt : 0,
+      dayStamp: typeof parsed.dayStamp === "string" ? parsed.dayStamp : "",
+      requestsToday:
+        typeof parsed.requestsToday === "number" ? parsed.requestsToday : 0,
+    };
+  } catch {
+    return { lastRequestAt: 0, dayStamp: buildDayStamp(), requestsToday: 0 };
+  }
+};
+
+const normalizeRateLimitState = (state: RateLimitState): RateLimitState => {
+  const today = buildDayStamp();
+  if (state.dayStamp === today) return state;
+  return { lastRequestAt: state.lastRequestAt, dayStamp: today, requestsToday: 0 };
+};
+
+const writeRateLimitState = (state: RateLimitState) => {
+  localStorage.setItem(RATE_LIMIT_STORAGE_KEY, JSON.stringify(state));
+};
+
+const isTailorSuggestion = (value: unknown): value is TailorSuggestion => {
+  if (!value || typeof value !== "object") return false;
+  const suggestion = value as Record<string, unknown>;
+  return (
+    typeof suggestion.original === "string" &&
+    typeof suggestion.suggested === "string" &&
+    typeof suggestion.reason === "string"
+  );
+};
+
+const isTailorResponse = (value: unknown): value is TailorResponse => {
+  if (!value || typeof value !== "object") return false;
+  const response = value as Record<string, unknown>;
+  if (!Array.isArray(response.suggestions) || !Array.isArray(response.keywords)) {
+    return false;
+  }
+  return (
+    response.suggestions.every(isTailorSuggestion) &&
+    response.keywords.every((keyword) => typeof keyword === "string")
+  );
+};
 
 const getInitialDarkMode = () => {
   const savedTheme = localStorage.getItem(THEME_KEY);
@@ -37,12 +111,118 @@ function App() {
     null,
   );
   const saveResumeLabelInputRef = useRef<HTMLInputElement>(null);
+  const [isTailoring, setIsTailoring] = useState(false);
+  const [tailorResponse, setTailorResponse] = useState<TailorResponse | null>(
+    null,
+  );
+  const [tailorError, setTailorError] = useState<string | null>(null);
+  const [copiedSuggestionIndex, setCopiedSuggestionIndex] = useState<
+    number | null
+  >(null);
+  const [rateLimitState, setRateLimitState] = useState<RateLimitState>(() =>
+    normalizeRateLimitState(readRateLimitState()),
+  );
 
   const canTailor =
     resumeText.trim().length > 0 && jobDescriptionText.trim().length > 0;
 
-  const handleTailorClick = () => {
-    console.log({ resumeText, jobDescriptionText });
+  const cooldownActive = Date.now() - rateLimitState.lastRequestAt < REQUEST_COOLDOWN_MS;
+  const hasDailyRequestsLeft = rateLimitState.requestsToday < DAILY_REQUEST_LIMIT;
+  const canSubmitTailorRequest =
+    canTailor && !isTailoring && !cooldownActive && hasDailyRequestsLeft;
+
+  const sanitizeModelResponse = (text: string) => {
+    const trimmed = text.trim();
+    if (trimmed.startsWith("```")) {
+      return trimmed.replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
+    }
+    return trimmed;
+  };
+
+  const handleTailorClick = async () => {
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    if (!canSubmitTailorRequest) return;
+    if (!apiKey) {
+      setTailorError(
+        "AI API key is not configured. Add your API key to the environment and try again.",
+      );
+      return;
+    }
+
+    setIsTailoring(true);
+    setTailorResponse(null);
+    setTailorError(null);
+    setCopiedSuggestionIndex(null);
+
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      const resumeSnippet = resumeText.trim().slice(0, 12_000);
+      const jobDescriptionSnippet = jobDescriptionText.trim().slice(0, 12_000);
+      const prompt = `You are helping tailor resume bullets for a job application.
+Only provide resume improvement content that is directly grounded in the provided resume and job description.
+Do not include unrelated advice, personal opinions, or content outside resume tailoring.
+Return JSON only with this exact shape:
+{
+  "suggestions": [
+    { "original": string, "suggested": string, "reason": string }
+  ],
+  "keywords": string[]
+}
+
+Rules:
+- suggestions must be per-bullet rewrite suggestions from the resume.
+- original must be a bullet from the resume text.
+- suggested must be a rewritten version of that bullet aligned to the job description.
+- reason must explain why the rewrite is stronger for this role.
+- keywords must include important terms from the job description that are currently missing from the resume.
+- return only valid JSON and no markdown.
+
+Resume:
+${resumeSnippet}
+
+Job Description:
+${jobDescriptionSnippet}`;
+
+      const result = await model.generateContent(prompt);
+      const responseText = result.response.text();
+      const parsed = JSON.parse(sanitizeModelResponse(responseText)) as unknown;
+      if (!isTailorResponse(parsed)) {
+        setTailorError(
+          "We received an unexpected response format from the AI service. Please try again.",
+        );
+        return;
+      }
+      setTailorResponse(parsed);
+
+      const nextRateLimitState = normalizeRateLimitState({
+        ...rateLimitState,
+        lastRequestAt: Date.now(),
+        requestsToday: rateLimitState.requestsToday + 1,
+      });
+      writeRateLimitState(nextRateLimitState);
+      setRateLimitState(nextRateLimitState);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        setTailorError(
+          "The AI service returned malformed JSON. Please try again.",
+        );
+        return;
+      }
+      setTailorError(
+        "Could not tailor your resume right now. Please try again.",
+      );
+    } finally {
+      setIsTailoring(false);
+    }
+  };
+
+  const handleCopySuggestion = async (suggestedText: string, index: number) => {
+    await navigator.clipboard.writeText(suggestedText);
+    setCopiedSuggestionIndex(index);
+    window.setTimeout(() => {
+      setCopiedSuggestionIndex((current) => (current === index ? null : current));
+    }, 1400);
   };
 
   const handleResumeTextChange = (value: string) => {
@@ -160,6 +340,19 @@ function App() {
     localStorage.setItem(THEME_KEY, isDarkMode ? DARK_THEME : LIGHT_THEME);
   }, [isDarkMode]);
 
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setRateLimitState((previous) => normalizeRateLimitState(previous));
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const remainingCooldownMs = Math.max(
+    0,
+    REQUEST_COOLDOWN_MS - (Date.now() - rateLimitState.lastRequestAt),
+  );
+  const cooldownSeconds = Math.ceil(remainingCooldownMs / 1000);
+
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-100">
       <nav className="border-b border-slate-300 bg-white/80 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/80">
@@ -178,7 +371,7 @@ function App() {
         </div>
       </nav>
       {/*TODO: Look at reworking the layout of this area. Maybe change resume list dropdown or have it show selected resume name. Add in resume overwriting.*/}
-      <main className="mx-auto flex w-full max-w-[900px] flex-1 flex-col gap-8 px-6 py-12">
+      <main className="mx-auto flex w-full max-w-[900px] flex-1 flex-col gap-6 px-4 py-8 sm:gap-8 sm:px-6 sm:py-12">
         <section className="rounded-xl border border-slate-300 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <h2 className="text-xl font-semibold">Resume</h2>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
@@ -335,19 +528,122 @@ function App() {
 
         <button
           type="button"
-          disabled={!canTailor}
+          disabled={!canSubmitTailorRequest}
           onClick={handleTailorClick}
           className="w-full rounded-lg border border-slate-800 bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:border-slate-300 disabled:bg-slate-200 disabled:text-slate-500 dark:border-slate-600 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-200 dark:disabled:border-slate-700 dark:disabled:bg-slate-800 dark:disabled:text-slate-500"
         >
-          Tailor my resume
+          {isTailoring ? "Tailoring..." : "Tailor my resume"}
         </button>
+        {!hasDailyRequestsLeft ? (
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            Daily request limit reached. Try again tomorrow.
+          </p>
+        ) : null}
+        {cooldownActive ? (
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            Please wait {cooldownSeconds}s before sending another request.
+          </p>
+        ) : null}
+        {tailorError ? (
+          <p
+            className="mt-1 text-sm text-red-600 dark:text-red-400"
+            role="alert"
+          >
+            {tailorError}
+          </p>
+        ) : null}
 
         <section className="rounded-xl border border-slate-300 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <h2 className="text-xl font-semibold">Tailored Results</h2>
-          <p className="mt-3 text-slate-600 dark:text-slate-300">
-            Placeholder: this is where tailored resume output and suggestions
-            will be shown.
-          </p>
+          <div className="mt-4 space-y-6">
+            {isTailoring ? (
+              <div className="space-y-4">
+                <div className="animate-pulse space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/40">
+                  <div className="h-3 w-20 rounded bg-slate-200 dark:bg-slate-700" />
+                  <div className="h-3 w-full rounded bg-slate-200 dark:bg-slate-700" />
+                  <div className="h-3 w-5/6 rounded bg-slate-200 dark:bg-slate-700" />
+                  <div className="h-3 w-24 rounded bg-slate-200 dark:bg-slate-700" />
+                </div>
+                <div className="animate-pulse space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/40">
+                  <div className="h-3 w-28 rounded bg-slate-200 dark:bg-slate-700" />
+                  <div className="h-3 w-full rounded bg-slate-200 dark:bg-slate-700" />
+                  <div className="h-3 w-3/4 rounded bg-slate-200 dark:bg-slate-700" />
+                </div>
+              </div>
+            ) : null}
+            <div>
+              <h3 className="text-base font-semibold">Suggestions</h3>
+              {!isTailoring &&
+              (!tailorResponse || tailorResponse.suggestions.length === 0) ? (
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                  No suggestions yet.
+                </p>
+              ) : !isTailoring ? (
+                <div className="mt-3 space-y-3">
+                  {tailorResponse.suggestions.map((suggestion, index) => (
+                    <article
+                      key={`${suggestion.original}-${index}`}
+                      className="rounded-lg border border-slate-200 bg-slate-50/40 p-4 dark:border-slate-700 dark:bg-slate-800/30"
+                    >
+                      <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        Original
+                      </p>
+                      <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">
+                        {suggestion.original}
+                      </p>
+
+                      <p className="mt-3 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        Suggested
+                      </p>
+                      <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">
+                        {suggestion.suggested}
+                      </p>
+
+                      <p className="mt-3 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        Reason
+                      </p>
+                      <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">
+                        {suggestion.reason}
+                      </p>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleCopySuggestion(suggestion.suggested, index)
+                        }
+                        className="mt-3 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+                      >
+                        {copiedSuggestionIndex === index
+                          ? "Copied!"
+                          : "Copy suggestion"}
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+
+            <div>
+              <h3 className="text-base font-semibold">Missing keywords</h3>
+              {!isTailoring &&
+              (!tailorResponse || tailorResponse.keywords.length === 0) ? (
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                  No missing keywords yet.
+                </p>
+              ) : !isTailoring ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {tailorResponse.keywords.map((keyword, index) => (
+                    <span
+                      key={`${keyword}-${index}`}
+                      className="rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+                    >
+                      {keyword}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </div>
         </section>
       </main>
     </div>
