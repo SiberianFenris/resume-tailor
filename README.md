@@ -37,3 +37,5 @@ Paste or upload your resume and a job description, bring your own API key, and g
 
 - Your API key is stored in your browser's localStorage and is never transmitted to any server other than the AI provider API directly.
 - Your resume text and saved resumes are stored locally in your browser and never leave your device.
+
+This app will be changed in the near future to include a FastAPI backend I'm working on and will likely remove the Bring Your Own API Key functionality.
