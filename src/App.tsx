@@ -19,6 +19,7 @@ const LIGHT_THEME = "light";
 const REQUEST_COOLDOWN_MS = 15_000;
 const DAILY_REQUEST_LIMIT = 10;
 const RATE_LIMIT_STORAGE_KEY = "resume-tailor-ai-rate-limit";
+const AI_API_KEY_STORAGE_KEY = "aiApiKey";
 
 type TailorSuggestion = {
   original: string;
@@ -61,7 +62,11 @@ const readRateLimitState = (): RateLimitState => {
 const normalizeRateLimitState = (state: RateLimitState): RateLimitState => {
   const today = buildDayStamp();
   if (state.dayStamp === today) return state;
-  return { lastRequestAt: state.lastRequestAt, dayStamp: today, requestsToday: 0 };
+  return {
+    lastRequestAt: state.lastRequestAt,
+    dayStamp: today,
+    requestsToday: 0,
+  };
 };
 
 const writeRateLimitState = (state: RateLimitState) => {
@@ -81,7 +86,10 @@ const isTailorSuggestion = (value: unknown): value is TailorSuggestion => {
 const isTailorResponse = (value: unknown): value is TailorResponse => {
   if (!value || typeof value !== "object") return false;
   const response = value as Record<string, unknown>;
-  if (!Array.isArray(response.suggestions) || !Array.isArray(response.keywords)) {
+  if (
+    !Array.isArray(response.suggestions) ||
+    !Array.isArray(response.keywords)
+  ) {
     return false;
   }
   return (
@@ -119,6 +127,20 @@ function App() {
   const [copiedSuggestionIndex, setCopiedSuggestionIndex] = useState<
     number | null
   >(null);
+  const [aiApiKeyInput, setAiApiKeyInput] = useState(() =>
+    localStorage.getItem(AI_API_KEY_STORAGE_KEY) ?? "",
+  );
+  const [savedAiApiKey, setSavedAiApiKey] = useState(() =>
+    localStorage.getItem(AI_API_KEY_STORAGE_KEY) ?? "",
+  );
+  const [isAiApiKeyJustSaved, setIsAiApiKeyJustSaved] = useState(false);
+  const [isEditingApiKey, setIsEditingApiKey] = useState(() =>
+    !(localStorage.getItem(AI_API_KEY_STORAGE_KEY) ?? "").trim(),
+  );
+  const [areSavedResumesExpanded, setAreSavedResumesExpanded] = useState(() => {
+    const existing = readSavedResumes();
+    return existing.length === 0;
+  });
   const [rateLimitState, setRateLimitState] = useState<RateLimitState>(() =>
     normalizeRateLimitState(readRateLimitState()),
   );
@@ -126,8 +148,10 @@ function App() {
   const canTailor =
     resumeText.trim().length > 0 && jobDescriptionText.trim().length > 0;
 
-  const cooldownActive = Date.now() - rateLimitState.lastRequestAt < REQUEST_COOLDOWN_MS;
-  const hasDailyRequestsLeft = rateLimitState.requestsToday < DAILY_REQUEST_LIMIT;
+  const cooldownActive =
+    Date.now() - rateLimitState.lastRequestAt < REQUEST_COOLDOWN_MS;
+  const hasDailyRequestsLeft =
+    rateLimitState.requestsToday < DAILY_REQUEST_LIMIT;
   const canSubmitTailorRequest =
     canTailor && !isTailoring && !cooldownActive && hasDailyRequestsLeft;
 
@@ -139,12 +163,33 @@ function App() {
     return trimmed;
   };
 
+  const handleSaveAiApiKey = () => {
+    const trimmed = aiApiKeyInput.trim();
+    if (trimmed) {
+      localStorage.setItem(AI_API_KEY_STORAGE_KEY, trimmed);
+    } else {
+      localStorage.removeItem(AI_API_KEY_STORAGE_KEY);
+    }
+    setSavedAiApiKey(trimmed);
+    setIsAiApiKeyJustSaved(true);
+    if (trimmed) setIsEditingApiKey(false);
+    window.setTimeout(() => setIsAiApiKeyJustSaved(false), 1500);
+  };
+
+  const handleDeleteAiApiKey = () => {
+    localStorage.removeItem(AI_API_KEY_STORAGE_KEY);
+    setSavedAiApiKey("");
+    setAiApiKeyInput("");
+    setIsEditingApiKey(true);
+    setIsAiApiKeyJustSaved(false);
+  };
+
   const handleTailorClick = async () => {
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    const apiKey = savedAiApiKey.trim();
     if (!canSubmitTailorRequest) return;
     if (!apiKey) {
       setTailorError(
-        "AI API key is not configured. Add your API key to the environment and try again.",
+        "No API key is saved. Add it in the API key field above, then click Save.",
       );
       return;
     }
@@ -221,7 +266,9 @@ ${jobDescriptionSnippet}`;
     await navigator.clipboard.writeText(suggestedText);
     setCopiedSuggestionIndex(index);
     window.setTimeout(() => {
-      setCopiedSuggestionIndex((current) => (current === index ? null : current));
+      setCopiedSuggestionIndex((current) =>
+        current === index ? null : current,
+      );
     }, 1400);
   };
 
@@ -371,7 +418,77 @@ ${jobDescriptionSnippet}`;
         </div>
       </nav>
       {/*TODO: Look at reworking the layout of this area. Maybe change resume list dropdown or have it show selected resume name. Add in resume overwriting.*/}
-      <main className="mx-auto flex w-full max-w-[900px] flex-1 flex-col gap-6 px-4 py-8 sm:gap-8 sm:px-6 sm:py-12">
+      <main className="mx-auto flex w-full max-w-[900px] flex-1 flex-col gap-8 px-4 py-8 sm:gap-10 sm:px-6 sm:py-12">
+        <section className="rounded-xl border border-slate-300 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+            Settings
+          </h2>
+          {savedAiApiKey && !isEditingApiKey ? (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/40">
+              <p className="text-sm text-slate-700 dark:text-slate-200">
+                <span className="mr-2 text-emerald-600 dark:text-emerald-400">
+                  ✓
+                </span>
+                API key saved
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAiApiKeyInput(savedAiApiKey);
+                    setIsEditingApiKey(true);
+                    setIsAiApiKeyJustSaved(false);
+                  }}
+                  className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteAiApiKey}
+                  className="rounded-md border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 transition hover:bg-red-50 dark:border-red-900/60 dark:bg-slate-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <label
+                htmlFor="ai-api-key"
+                className="mt-3 block text-sm font-medium text-slate-700 dark:text-slate-300"
+              >
+                AI API key
+              </label>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input
+                  id="ai-api-key"
+                  type="password"
+                  value={aiApiKeyInput}
+                  onChange={(event) => setAiApiKeyInput(event.target.value)}
+                  className="min-w-[220px] flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-400/30 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-slate-500 dark:focus:ring-slate-500/30"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveAiApiKey}
+                  className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+                >
+                  Save
+                </button>
+              </div>
+              {isAiApiKeyJustSaved ? (
+                <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
+                  API key saved.
+                </p>
+              ) : null}
+            </>
+          )}
+          <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+            Your API key is stored locally in your browser and never sent to our
+            servers.
+          </p>
+        </section>
+
         <section className="rounded-xl border border-slate-300 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
           <h2 className="text-xl font-semibold">Resume</h2>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
@@ -409,41 +526,54 @@ ${jobDescriptionSnippet}`;
             </span>
           </div>
           <div className="mt-6">
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">
-              Saved resumes
-            </h3>
-            {savedResumes.length === 0 ? (
-              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-                No saved resumes yet
-              </p>
-            ) : (
-              <ul className="mt-2 divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-700 dark:border-slate-700">
-                {savedResumes.map((r) => (
-                  <li
-                    key={r.id}
-                    className="flex flex-wrap items-center gap-2 px-3 py-2.5 first:rounded-t-lg last:rounded-b-lg dark:bg-slate-900/40"
-                  >
-                    <span className="min-w-0 flex-1 truncate text-sm text-slate-700 dark:text-slate-300">
-                      {r.label}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => loadSavedResume(r.id)}
-                      className="shrink-0 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+            <button
+              type="button"
+              onClick={() => setAreSavedResumesExpanded((previous) => !previous)}
+              className="flex w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 py-2 text-left text-sm font-semibold text-slate-800 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+            >
+              <span>Saved resumes ({savedResumes.length})</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                {areSavedResumesExpanded ? "Hide" : "Show"}
+              </span>
+            </button>
+            {areSavedResumesExpanded ? (
+              savedResumes.length === 0 ? (
+                <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                  No saved resumes yet
+                </p>
+              ) : (
+                <ul className="mt-2 divide-y divide-slate-200 rounded-lg border border-slate-200 dark:divide-slate-700 dark:border-slate-700">
+                  {savedResumes.map((r) => (
+                    <li
+                      key={r.id}
+                      className="flex flex-wrap items-center gap-2 px-3 py-2.5 first:rounded-t-lg last:rounded-b-lg dark:bg-slate-900/40"
                     >
-                      Load
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => deleteSavedResume(r.id)}
-                      className="shrink-0 rounded-md border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 transition hover:bg-red-50 dark:border-red-900/60 dark:bg-slate-900 dark:text-red-400 dark:hover:bg-red-950/40"
-                    >
-                      Delete
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+                      <span className="min-w-0 flex-1 truncate text-sm text-slate-700 dark:text-slate-300">
+                        {r.label}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => loadSavedResume(r.id)}
+                        className="shrink-0 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+                      >
+                        Load
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteSavedResume(r.id)}
+                        className="shrink-0 rounded-md border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 transition hover:bg-red-50 dark:border-red-900/60 dark:bg-slate-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                      >
+                        Delete
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : null}
+            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+              Saved resumes are stored locally in your browser and will persist
+              unless you clear your browser&apos;s site data.
+            </p>
           </div>
           {saveResumePanelOpen ? (
             <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/80">
@@ -580,7 +710,7 @@ ${jobDescriptionSnippet}`;
                 </p>
               ) : !isTailoring ? (
                 <div className="mt-3 space-y-3">
-                  {tailorResponse.suggestions.map((suggestion, index) => (
+                  {(tailorResponse?.suggestions ?? []).map((suggestion, index) => (
                     <article
                       key={`${suggestion.original}-${index}`}
                       className="rounded-lg border border-slate-200 bg-slate-50/40 p-4 dark:border-slate-700 dark:bg-slate-800/30"
@@ -632,7 +762,7 @@ ${jobDescriptionSnippet}`;
                 </p>
               ) : !isTailoring ? (
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {tailorResponse.keywords.map((keyword, index) => (
+                  {(tailorResponse?.keywords ?? []).map((keyword, index) => (
                     <span
                       key={`${keyword}-${index}`}
                       className="rounded-full border border-slate-300 bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
